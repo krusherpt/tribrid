@@ -121,15 +121,47 @@ export async function startDiscordLeg(
   // every ~1.5 s (DTX-like) so the wire idles and the bot's speaking
   // indicator behaves.
   const { Readable } = await import('node:stream');
-  const opusStream = new Readable({ objectMode: true, read() {} });
-  let resource: AudioResource = createAudioResource(opusStream, {
-    inputType: StreamType.Opus,
-    inlineVolume: false,
-  });
-  const makeResource = (): AudioResource =>
-    createAudioResource(opusStream, { inputType: StreamType.Opus, inlineVolume: false });
-  player.play(resource);
   const SILENCE = Buffer.from([0xf8, 0xff, 0xfe]); // opus "silence" packet
+  // The TX stream can be ENDED underneath us when discord.js tears a resource
+  // down (observed: player -> idle right as a haven peer left/rejoined). A
+  // finished Readable is unusable forever ("Cannot play a resource that has
+  // already ended"), so the stream + resource must be REBUILDABLE. All writes
+  // go through pushOpus(), which transparently rebuilds a dead pipeline.
+  let opusStream: import('node:stream').Readable & { push(c: unknown): boolean };
+  let resource: AudioResource;
+  const mkStream = () => {
+    const st = new Readable({ objectMode: true, read() {} });
+    st.on('end', () => log(TAG, 'X tx stream ended'));
+    st.on('close', () => log(TAG, 'tx stream closed'));
+    st.on('error', (e: unknown) => log(TAG, `tx stream error: ${e instanceof Error ? e.message : e}`));
+    return st;
+  };
+  const rebuildTx = () => {
+    try {
+      opusStream?.destroy();
+    } catch {
+      /* old stream already gone */
+    }
+    opusStream = mkStream();
+    resource = createAudioResource(opusStream, { inputType: StreamType.Opus, inlineVolume: false });
+    player.play(resource);
+    opusStream.push(SILENCE); // prime so the player leaves buffering
+    log(TAG, 'tx pipeline rebuilt');
+  };
+  const pushOpus = (pkt: Buffer) => {
+    if (opusStream.destroyed || opusStream.readableEnded) rebuildTx();
+    try {
+      opusStream.push(pkt);
+    } catch {
+      rebuildTx();
+      try {
+        opusStream.push(pkt);
+      } catch {
+        /* last resort */
+      }
+    }
+  };
+  rebuildTx();
   let silentTicks = 0;
   let dbgFrames = 0;
   let dbgActive = 0;
@@ -144,15 +176,16 @@ export async function startDiscordLeg(
     // replacing the resource (the old one may have ended its stream).
     if (
       connection?.state.status === 'ready' &&
-      (player.state.status === 'idle' || player.state.status === 'autopaused')
+      (player.state.status === 'idle' ||
+        player.state.status === 'autopaused' ||
+        opusStream.destroyed ||
+        opusStream.readableEnded)
     ) {
       try {
-        resource = makeResource();
-        player.play(resource);
-        opusStream.push(SILENCE);
-        log(TAG, 'watchdog: player was idle while conn ready — re-primed');
+        rebuildTx();
+        log(TAG, 'watchdog: dead TX pipeline detected while conn ready — rebuilt');
       } catch (e) {
-        log(TAG, `watchdog re-prime failed: ${e instanceof Error ? e.message : e}`);
+        log(TAG, `watchdog rebuild failed: ${e instanceof Error ? e.message : e}`);
       }
     }
   }, 10_000);
@@ -167,11 +200,11 @@ export async function startDiscordLeg(
       if (active) {
         dbgActive++;
         silentTicks = 0;
-        opusStream.push(enc.encode(floatToS16(frame)));
+        pushOpus(enc.encode(floatToS16(frame)));
         dbgPushed++;
       } else if (++silentTicks >= 75) {
         silentTicks = 0;
-        opusStream.push(SILENCE);
+        pushOpus(SILENCE);
         dbgPushed++;
       }
     },
