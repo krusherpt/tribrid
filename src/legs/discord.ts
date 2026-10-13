@@ -122,10 +122,12 @@ export async function startDiscordLeg(
   // indicator behaves.
   const { Readable } = await import('node:stream');
   const opusStream = new Readable({ objectMode: true, read() {} });
-  const resource: AudioResource = createAudioResource(opusStream, {
+  let resource: AudioResource = createAudioResource(opusStream, {
     inputType: StreamType.Opus,
     inlineVolume: false,
   });
+  const makeResource = (): AudioResource =>
+    createAudioResource(opusStream, { inputType: StreamType.Opus, inlineVolume: false });
   player.play(resource);
   const SILENCE = Buffer.from([0xf8, 0xff, 0xfe]); // opus "silence" packet
   let silentTicks = 0;
@@ -137,7 +139,23 @@ export async function startDiscordLeg(
       log(TAG, `outlet 30s: frames=${dbgFrames} active=${dbgActive} pushed=${dbgPushed} player=${player.state.status} conn=${connection?.state.status ?? 'none'}`);
       dbgFrames = dbgActive = dbgPushed = 0;
     }
-  }, 30_000);
+    // Watchdog: discord.js can strand the player in 'idle' while the voice
+    // connection is still ready (observed after WS reconnects); re-prime by
+    // replacing the resource (the old one may have ended its stream).
+    if (
+      connection?.state.status === 'ready' &&
+      (player.state.status === 'idle' || player.state.status === 'autopaused')
+    ) {
+      try {
+        resource = makeResource();
+        player.play(resource);
+        opusStream.push(SILENCE);
+        log(TAG, 'watchdog: player was idle while conn ready — re-primed');
+      } catch (e) {
+        log(TAG, `watchdog re-prime failed: ${e instanceof Error ? e.message : e}`);
+      }
+    }
+  }, 10_000);
   outletTimers.push(dbgOutlet);
   const outlet: Outlet = {
     id: 'discord',
