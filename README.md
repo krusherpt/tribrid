@@ -1,5 +1,7 @@
 # tribrid
 
+> **Disclaimer:** this project was made using AI (Qwen Flash Next).
+
 Low-latency voice mesh between **Discord**, **Haven** and **Fluxer** — one
 always-on bot that sits in a voice channel on each platform and forwards
 everything it hears to the others, so a call is a call no matter where your
