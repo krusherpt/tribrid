@@ -42,6 +42,7 @@ interface HavenPeer {
 export interface HavenLeg {
   roster(): { id: string; name: string }[];
   setVoiceWanted(w: boolean): void;
+  setPresenceText(text: string): void;
   outletIdPrefix: string;
   destroy(): void;
 }
@@ -93,6 +94,7 @@ export async function startHavenLeg(
   let joinAcked = false;
   let inVoice = false;
   let voiceWanted = true;
+  let lastStatusText = '';
 
   // werift takes one URL string per ice server entry (STUN and TURN both).
   // Entries with `authSecret` get fresh coturn REST creds (identical
@@ -283,6 +285,7 @@ export async function startHavenLeg(
 
   socket.on('bot-session', (s: { id: number; username: string; channelCode: string }) => {
     botId = s.id;
+    if (lastStatusText) socket.emit('set-status', { status: 'online', statusText: lastStatusText });
     log(TAG, `bot session id=${s.id} name="${s.username}" homeChannel=${s.channelCode}`);
   });
 
@@ -368,6 +371,12 @@ export async function startHavenLeg(
 
   return {
     roster: () => [...roster.entries()].map(([id, name]) => ({ id: String(id), name })),
+    setPresenceText(text: string) {
+      const t = text.slice(0, 128);
+      if (t === lastStatusText) return;
+      lastStatusText = t;
+      if (socket?.connected) socket.emit('set-status', { status: 'online', statusText: t });
+    },
     setVoiceWanted(w: boolean) {
       if (w === voiceWanted) return;
       voiceWanted = w;

@@ -63,7 +63,25 @@ async function main(): Promise<void> {
   let havenSeen = 0;
   let discordSeen = 0;
   let lastProbe = Date.now();
+  let lastActSig = '';
+  function updateActivities(): void {
+    const dUsers = discord ? discord.roster() : [];
+    const hUsers = haven ? haven.roster() : [];
+    const sig = [dUsers, hUsers].map((u) => u.map((x) => x.id).sort().join()).join('|');
+    if (sig === lastActSig) return;
+    lastActSig = sig;
+    const fmt = (users: { name: string }[], other: string) =>
+      users.length === 0
+        ? `waiting for ${other}`
+        : `${users.length} on ${other}` +
+          (users.length <= 3 ? `: ${users.map((u) => u.name).join(', ')}` : '');
+    // each side advertises WHO IS ON THE OTHER side (never its own roster)
+    discord?.setActivity(haven ? fmt(hUsers, 'Haven') : '');
+    haven?.setPresenceText(discord ? fmt(dUsers, 'Discord') : '');
+  }
+
   function presenceTick(): void {
+    updateActivities();
     const now = Date.now();
     const dh = discord ? discord.roster().length : 0;
     const hv = haven ? haven.roster().length : 0;
@@ -79,7 +97,10 @@ async function main(): Promise<void> {
     }
     haven.setVoiceWanted(havenW);
   }
-  const presenceTimer = setInterval(presenceTick, 6_000);
+  const presenceTimer = setInterval(() => {
+    presenceTick();
+    lastActSig = ''; // periodic re-sync (presence can be reset by reconnects)
+  }, 6_000);
   setTimeout(presenceTick, 2_000);
 
   if (legs.length === 0) {

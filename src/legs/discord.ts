@@ -7,6 +7,7 @@ import {
   Client,
   GatewayIntentBits,
   type VoiceBasedChannel,
+  ActivityType
 } from 'discord.js';
 import {
   joinVoiceChannel,
@@ -32,6 +33,7 @@ export interface DiscordLeg {
   client: Client;
   roster(): { id: string; name: string }[];
   setVoiceWanted(w: boolean): void;
+  setActivity(text: string): void;
   outletId: string;
   textChannelId?: string;
   destroy(): void;
@@ -58,6 +60,8 @@ export async function startDiscordLeg(
   const outletTimers: ReturnType<typeof setInterval>[] = [];
   let destroyed = false;
   let voiceWanted = true;
+  let lastActivity = '';
+  let lastActivityAt = 0;
 
   const decoderCache = new Map<string, Decoder>();
   const getDecoder = (id: string): Decoder => {
@@ -129,7 +133,7 @@ export async function startDiscordLeg(
   let dbgActive = 0;
   let dbgPushed = 0;
   const dbgOutlet = setInterval(() => {
-    if (dbgFrames) {
+    if (dbgActive || dbgPushed) {
       log(TAG, `outlet 30s: frames=${dbgFrames} active=${dbgActive} pushed=${dbgPushed} player=${player.state.status} conn=${connection?.state.status ?? 'none'}`);
       dbgFrames = dbgActive = dbgPushed = 0;
     }
@@ -239,6 +243,24 @@ export async function startDiscordLeg(
   return {
     client,
     roster: () => [...roster.entries()].map(([id, name]) => ({ id, name })),
+    setActivity(text: string) {
+      const t = text.slice(0, 128);
+      if (!client.user) return; // not logged in yet; the 6s re-sync will retry
+      if (t === lastActivity) return;
+      const now = Date.now();
+      if (now - lastActivityAt < 10_000) return; // gateway presence budget
+      lastActivity = t;
+      lastActivityAt = now;
+      try {
+        client.user.setPresence({
+          activities: t ? [{ name: t, type: ActivityType.Listening }] : [],
+          status: 'online',
+        });
+        log(TAG, `activity set: "${t}"`);
+      } catch (e) {
+        log(TAG, `activity set failed: ${e instanceof Error ? e.message : e}`);
+      }
+    },
     setVoiceWanted(w: boolean) {
       if (w === voiceWanted) return;
       voiceWanted = w;
