@@ -143,7 +143,15 @@ export async function startDiscordLeg(
       /* old stream already gone */
     }
     opusStream = mkStream();
-    resource = createAudioResource(opusStream, { inputType: StreamType.Opus, inlineVolume: false });
+    // silencePaddingFrames: -1 — CRITICAL: with the default (5), the player
+    // calls stop() after a ~100ms gap in the stream, and stop() DESTROYS the
+    // input stream (voice index.js ~431), permanently killing TX. -1 keeps the
+    // resource alive across silence forever.
+    resource = createAudioResource(opusStream, {
+      inputType: StreamType.Opus,
+      inlineVolume: false,
+      silencePaddingFrames: -1,
+    });
     player.play(resource);
     opusStream.push(SILENCE); // prime so the player leaves buffering
     log(TAG, 'tx pipeline rebuilt');
