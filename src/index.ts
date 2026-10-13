@@ -88,14 +88,18 @@ async function main(): Promise<void> {
     if (dh > 0) discordSeen = now;
     if (hv > 0) havenSeen = now;
     if (!discord || !haven) return; // single-leg: nothing to bridge
-    discord.setVoiceWanted(dh > 0 || now - havenSeen < GRACE_MS);
-    const havenW = hv > 0 || now - discordSeen < GRACE_MS;
-    if (!havenW && now - lastProbe > PROBE_MS && now - havenSeen > GRACE_MS) {
+    // Symmetric rule: a human on EITHER side (or seen within the grace
+    // window) keeps BOTH legs parked. Nobody anywhere for GRACE_MS → both
+    // leave. (Earlier asymmetric rules left the moment a room emptied.)
+    const lastHuman = Math.max(discordSeen, havenSeen);
+    const wantVoice = dh > 0 || hv > 0 || now - lastHuman < GRACE_MS;
+    discord.setVoiceWanted(wantVoice);
+    if (!wantVoice && now - lastProbe > PROBE_MS && now - havenSeen > GRACE_MS) {
       lastProbe = now;
       haven.setVoiceWanted(true); // brief probe; next tick decides to stay or leave
       return;
     }
-    haven.setVoiceWanted(havenW);
+    haven.setVoiceWanted(wantVoice);
   }
   const presenceTimer = setInterval(() => {
     presenceTick();
