@@ -69,15 +69,41 @@ async function loadWasm(): Promise<(() => RawCodec) | null> {
     };
     codecBackend = 'opusscript';
     return () => {
-      // opusscript instances both encode and decode
-      const inst = new OpusScript(48000, 2, 2048 /* VOIP */);
+      // opusscript instances both encode and decode. CRITICAL: its embedded
+      // (ancient) libopus calls abort() on some real-world packets (seen with
+      // Haven 4.26.x clients). In WASM abort() throws a RuntimeError that IS
+      // catchable, but the instance is dead forever after — it must be RECREATED
+      // or every later packet fails too (symptom: bot connected, nobody hears
+      // anyone, journal full of "Aborted()"). Hence self-heal: recreate on abort.
+      let inst = new OpusScript(48000, 2, 2048 /* VOIP */);
+      let failStreak = 0;
+      let failLogged = 0;
       return {
         encode: (pcm: Buffer) => inst.encode(pcm, FRAME_SAMPLES),
         decode: (opus: Buffer) => {
+          if (opus.length < 2) return null;
           try {
-            return inst.decode(opus);
-          } catch {
-            return null;
+            const out = inst.decode(opus);
+            failStreak = 0;
+            return out;
+          } catch (e) {
+            // keep forensic evidence of the killer packet (throttled)
+            if (++failLogged <= 5 || failLogged % 500 === 0) {
+              console.error(
+                `[codec] opusscript decode fail #${failLogged} len=${opus.length} ` +
+                  `head=${opus.subarray(0, 4).toString('hex')} ` +
+                  `err=${e instanceof Error ? e.message.slice(0, 60) : String(e).slice(0, 60)}`,
+              );
+            }
+            if (++failStreak >= 2) {
+              failStreak = 0;
+              try {
+                inst = new OpusScript(48000, 2, 2048);
+              } catch {
+                /* nothing else we can do */
+              }
+            }
+            return null; // opus PLC handles the gap
           }
         },
         setBitrate: (b: number) => inst.setBitrate?.(b),
