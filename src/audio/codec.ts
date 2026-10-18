@@ -54,7 +54,10 @@ async function loadNative(): Promise<(() => RawCodec) | null> {
         setBitrate: (b: number) => enc.setBitrate(b),
       };
     };
-  } catch {
+  } catch (e) {
+    console.error(
+      `[codec] native opus load failed: ${e instanceof Error ? e.message : String(e)}`,
+    );
     return null;
   }
 }
